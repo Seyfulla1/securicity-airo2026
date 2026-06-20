@@ -1,0 +1,194 @@
+# ===========================================================================
+# VillageShield - container orchestration
+# ===========================================================================
+# Modern Docker Compose no longer needs a top-level `version:` key, so we omit
+# it. `name:` sets the project name (used as a prefix for the network/volumes).
+#
+# The key idea: we build a PRIVATE software network (`village_net`) and give each
+# service a fixed address on it. This is "containerized network isolation" - the
+# services can talk to each other on this bridge, but nothing else on your
+# laptop is part of it. We then choose *very deliberately* which ports to expose
+# to the outside world (the host):
+#   - dashboard  -> exposed on 3000 so an operator can open the SOC in a browser
+#   - router     -> exposed on 8080 so the mock devices can send it commands
+#   - core       -> NOT exposed. The protected backend can ONLY be reached from
+#                   inside the bridge, and only the router knows how to route to
+#                   it. If an attacker on your host can't even address it, they
+#                   can't attack it. That is zero-trust segmentation in action.
+#   - ollama     -> NOT exposed externally. The local AI engine is only reachable
+#                   by the router at 172.28.0.40:11434 inside village_net.
+#                   This is critical: an external attacker cannot query our AI or
+#                   abuse it to probe the system. Security boundary maintained.
+#
+# STARTUP ORDER (important!):
+#   dashboard -> (ready immediately)
+#   ollama    -> starts server, waits for health check to pass (~60-120s on first
+#                boot while the model downloads; ~5s on subsequent boots from cache)
+#   router    -> waits for BOTH dashboard (service_started) AND ollama (service_healthy)
+#                before accepting traffic. This guarantees the AI is ready before
+#                any packet arrives.
+#   core      -> starts alongside dashboard; no AI dependency.
+# ===========================================================================
+name: villageshield
+
+# ===========================================================================
+# VOLUMES
+# ===========================================================================
+# Docker volumes persist data between container restarts. Without this, every
+# `docker compose up` would re-download the 1.3 GB AI model from scratch.
+# With this named volume, the model is cached on your host disk permanently.
+# The first `docker compose up` downloads the model once. Every subsequent
+# startup skips the download and loads from disk in ~5 seconds.
+#
+# To wipe the model cache (e.g., to switch models): `docker volume rm villageshield_ollama_models`
+volumes:
+  ollama_models:
+
+services:
+  # -------------------------------------------------------------------------
+  # SIEM + live dashboard (Node.js). Receives webhooks from the router and
+  # streams the security picture to browsers over WebSockets.
+  # -------------------------------------------------------------------------
+  dashboard:
+    build: ./dashboard
+    container_name: vs_dashboard
+    environment:
+      - PORT=3000
+    networks:
+      village_net:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "3000:3000"          # host:container  -> open http://localhost:3000
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # OLLAMA - The Local Open-Source AI Engine
+  # -------------------------------------------------------------------------
+  # Ollama is a free, open-source tool that runs large language models locally.
+  # It exposes a REST HTTP API on port 11434 that our router queries to get
+  # AI-powered risk assessments.
+  #
+  # IP: 172.28.0.40 (only reachable inside village_net, never from the host)
+  #
+  # WHAT HAPPENS ON FIRST BOOT:
+  #   1. entrypoint.sh starts `ollama serve` in the background
+  #   2. It calls `ollama list` in a loop until the server responds
+  #   3. It then runs `ollama pull llama3.2:1b` (downloads ~1.3 GB)
+  #   4. The healthcheck then starts passing, unblocking the router
+  #
+  # WHAT HAPPENS ON SUBSEQUENT BOOTS:
+  #   1-3 same steps, but `ollama pull` is nearly instant (already cached in volume)
+  #   4. Router unblocked within ~10 seconds
+  #
+  # MODEL CHOICE - WHY llama3.2:1b?
+  #   - Smallest useful Meta Llama model: only 1.3 GB, ~2 GB RAM required
+  #   - Responds in 0.5-2 seconds on CPU (no GPU required)
+  #   - Capable of following JSON formatting instructions reliably
+  #   - Change to `phi3:mini` (3.8B) or `llama3.2:3b` for better reasoning
+  #     at the cost of more RAM and slower responses.
+  # -------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: vs_ollama
+    networks:
+      village_net:
+        ipv4_address: 172.28.0.40
+    volumes:
+      # Persist downloaded model weights between restarts.
+      - ollama_models:/root/.ollama
+      # Mount our custom startup script that auto-pulls the model.
+      # The :ro flag (read-only) prevents the container from modifying it.
+      - ./ollama/entrypoint.sh:/entrypoint.sh:ro
+    # Override the default `ollama serve` entrypoint with our startup script
+    # that both starts the server AND pulls the model.
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    environment:
+      # The model name. Change this here to switch models for the whole stack.
+      - OLLAMA_MODEL=llama3.2:1b
+    # NOTE: No `ports:` block here. Port 11434 is intentionally NOT exposed
+    # to the host machine. Only the router can reach it inside village_net.
+    restart: unless-stopped
+    healthcheck:
+      # Docker uses this to determine when Ollama is "healthy" and ready.
+      # The router's `depends_on: ollama: condition: service_healthy` will
+      # wait for this check to pass before the router starts accepting packets.
+      #
+      # WHY /bin/ollama list instead of curl:
+      #   curl is NOT installed in the ollama/ollama base image, so a curl-based
+      #   check always fails, the service stays "unhealthy", and the router
+      #   container never starts. `ollama list` is always present and uses the
+      #   same internal IPC as the server itself — no curl dependency, no IPv4/
+      #   IPv6 resolution ambiguity. Exit code 0 = server up AND model available.
+      test: ["CMD", "/bin/ollama", "list"]
+      interval: 15s      # Run the check every 15 seconds.
+      timeout: 10s       # A check taking longer than 10s counts as failed.
+      retries: 30        # Allow up to 30 failures before marking as unhealthy.
+      start_period: 120s # Grace period: don't count failures in the first 120s.
+                         # The model download can take 2-5 minutes on slow connections.
+
+  # -------------------------------------------------------------------------
+  # Security router / Policy Enforcement Point (Flask). The only door devices
+  # are allowed to knock on.
+  # -------------------------------------------------------------------------
+  router:
+    build: ./router
+    container_name: vs_router
+    environment:
+      - LISTEN_PORT=5000
+      - DASHBOARD_WEBHOOK=http://172.28.0.10:3000/api/ingest
+      - CORE_BACKEND=http://172.28.0.30:6000/command
+      # NEW: Where to find the local Ollama AI engine.
+      # "172.28.0.40" is Ollama's static IP on village_net.
+      - OLLAMA_URL=http://172.28.0.40:11434
+      # NEW: Which model to query. Must match what Ollama pulled.
+      - OLLAMA_MODEL=llama3.2:1b
+      # NEW: How many seconds to wait for an AI response before giving up
+      # and falling back to static ACM scoring. Keep this low (8s) so a
+      # slow AI doesn't stall the entire security pipeline.
+      - OLLAMA_TIMEOUT=8
+    networks:
+      village_net:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "8080:5000"          # host 8080 -> container 5000 (devices target :8080)
+    depends_on:
+      dashboard:
+        # Start after dashboard is running (so the webhook endpoint is ready).
+        condition: service_started
+      ollama:
+        # CRITICAL: Only start AFTER Ollama's health check passes.
+        # `service_healthy` (not `service_started`) means we wait until
+        # the model is fully downloaded and the API is responding.
+        # Without this, the router would start and immediately get
+        # "connection refused" on all AI queries.
+        condition: service_healthy
+      core:
+        condition: service_started
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # Core Utilities (Flask). The protected backend - the village's real control
+  # plane. Intentionally has NO security logic and NO exposed host port.
+  # -------------------------------------------------------------------------
+  core:
+    build: ./core
+    container_name: vs_core
+    environment:
+      - CORE_PORT=6000
+    networks:
+      village_net:
+        ipv4_address: 172.28.0.30
+    # NOTE: deliberately no `ports:` block - core is unreachable from the host.
+    restart: unless-stopped
+
+# ===========================================================================
+# The private bridge network. `ipam` lets us pin the subnet so the static IPs
+# above are always valid and predictable across restarts.
+# ===========================================================================
+networks:
+  village_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
