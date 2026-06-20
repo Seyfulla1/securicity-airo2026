@@ -1,0 +1,1323 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VillageShield — Security Operations Center</title>
+
+    <!-- TailwindCSS (Play CDN: compiles utility classes in the browser). -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Fonts: a "rural utility control room" type system, not generic cyber-neon. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <!--
+    Socket.io CLIENT. We deliberately load it from OUR OWN Node server
+    (/socket.io/socket.io.js is auto-served by the socket.io library), so the
+    client and server versions always match and the dashboard works fully
+    offline / on a closed hackathon network.
+  -->
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script>
+      // Register the VillageShield palette + fonts as Tailwind tokens so the
+      // markup below can use names like `bg-panel` or `text-sage`.
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              base: "#0E1116", // app background (deep slate)
+              panel: "#161B22", // card / panel surface
+              panel2: "#1B222B", // raised surface (table headers, modal)
+              hair: "#2A323D", // hairline borders
+              ink: "#E6EAF0", // primary text
+              mut: "#8A97A8", // muted/secondary text
+              sage: "#6FB07F", // NOMINAL  (calm green)
+              amber: "#E2B53C", // ELEVATED (caution)
+              suspicious: "#E07B39", // SUSPICIOUS (orange)
+              critical: "#E0483D", // CRITICAL / ISOLATED (red)
+              steel: "#4FB0C6", // accent / links / inbound
+              // NEW: AI panel accent colour — a soft violet to distinguish AI
+              // content from standard security data at a glance.
+              ai: "#8B6FD4", // AI accent (purple)
+            },
+            fontFamily: {
+              display: ['"Space Grotesk"', "sans-serif"],
+              mono: ['"IBM Plex Mono"', "monospace"],
+              body: ["Inter", "sans-serif"],
+            },
+          },
+        },
+      };
+    </script>
+
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        background-color: #0e1116;
+        /* A faint top glow + subtle grid so the dark canvas isn't dead flat. */
+        background-image:
+          radial-gradient(
+            1100px 480px at 50% -10%,
+            rgba(79, 176, 198, 0.1),
+            transparent 70%
+          ),
+          linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+          linear-gradient(
+            90deg,
+            rgba(255, 255, 255, 0.018) 1px,
+            transparent 1px
+          );
+        background-size:
+          100% 100%,
+          44px 44px,
+          44px 44px;
+        font-family: Inter, sans-serif;
+      }
+
+      /* Tidy dark scrollbars inside the scrolling log tables. */
+      .vs-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: #2a323d transparent;
+      }
+      .vs-scroll::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      .vs-scroll::-webkit-scrollbar-thumb {
+        background: #2a323d;
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+      }
+      .vs-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      /* Status lamp: a small glowing dot whose colour encodes device status. */
+      .lamp {
+        box-shadow:
+          0 0 0 3px rgba(0, 0, 0, 0.25),
+          0 0 12px 0 currentColor;
+      }
+
+      /* Pulsing ring used only on ISOLATED device cards to draw the eye. */
+      @keyframes vs-pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(224, 72, 61, 0.55);
+        }
+        70% {
+          box-shadow: 0 0 0 14px rgba(224, 72, 61, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(224, 72, 61, 0);
+        }
+      }
+      .isolated-pulse {
+        animation: vs-pulse 1.8s ease-out infinite;
+      }
+
+      @keyframes vs-fade {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .feed-row {
+        animation: vs-fade 0.22s ease-out;
+      }
+
+      /* NEW: AI insight text pulse — draws the eye when insight updates. */
+      @keyframes ai-flash {
+        0% {
+          background-color: rgba(139, 111, 212, 0.18);
+        }
+        100% {
+          background-color: transparent;
+        }
+      }
+      .ai-flash {
+        animation: ai-flash 1.2s ease-out forwards;
+      }
+
+      /* Clear keyboard focus rings for accessibility. */
+      .focusable:focus-visible {
+        outline: 2px solid #4fb0c6;
+        outline-offset: 2px;
+        border-radius: 12px;
+      }
+
+      /* Respect users who prefer reduced motion: switch animations off. */
+      @media (prefers-reduced-motion: reduce) {
+        .isolated-pulse,
+        .feed-row,
+        .ai-flash {
+          animation: none !important;
+        }
+        * {
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+
+  <body class="text-ink antialiased">
+    <!-- ===================================================================== -->
+    <!-- LOGIN OVERLAY  (shown first; hidden after the correct PIN is entered)  -->
+    <!-- ===================================================================== -->
+    <div
+      id="login"
+      class="fixed inset-0 z-50 flex items-center justify-center px-4"
+    >
+      <div class="absolute inset-0 bg-base/80 backdrop-blur-sm"></div>
+
+      <div
+        class="relative w-full max-w-sm rounded-2xl border border-hair bg-panel/95 p-7 shadow-2xl"
+      >
+        <div class="flex items-center gap-3">
+          <div
+            class="grid h-11 w-11 place-items-center rounded-xl border border-hair bg-panel2 text-steel"
+          >
+            <!-- shield icon -->
+            <svg
+              width="22"
+              height="22"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" />
+              <path d="M9.5 12l1.8 1.8L15 10" />
+            </svg>
+          </div>
+          <div>
+            <h1 class="font-display text-xl font-semibold leading-tight">
+              VillageShield
+            </h1>
+            <p class="text-xs text-mut">
+              Security Operations Center · AI-Powered
+            </p>
+          </div>
+        </div>
+
+        <p class="mt-6 text-sm text-mut">
+          Enter the administrator PIN to open the live SOC panel.
+        </p>
+
+        <input
+          id="pin"
+          type="password"
+          inputmode="numeric"
+          autocomplete="off"
+          maxlength="12"
+          placeholder="••••"
+          autofocus
+          class="focusable mt-3 w-full rounded-xl border border-hair bg-base px-4 py-3 text-center font-mono text-2xl tracking-[0.5em] text-ink placeholder-mut/50 outline-none focus:border-steel"
+        />
+
+        <p id="pin-error" class="mt-2 hidden text-center text-sm text-critical">
+          Incorrect PIN. Try again.
+        </p>
+
+        <button
+          id="login-btn"
+          type="button"
+          onclick="attemptLogin()"
+          class="focusable mt-4 w-full rounded-xl bg-steel px-4 py-3 font-display text-sm font-semibold transition hover:brightness-110 active:brightness-95"
+          style="color: #0e1116"
+        >
+          Unlock Console
+        </button>
+
+        <p class="mt-4 text-center text-[11px] text-mut/70">
+          Demo PIN for the hackathon jury:
+          <span class="font-mono text-mut">1234</span>
+        </p>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- MAIN APPLICATION  (hidden until authenticated)                         -->
+    <!-- ===================================================================== -->
+    <div id="app" class="hidden min-h-full">
+      <!-- Top bar -->
+      <header
+        class="sticky top-0 z-30 border-b border-hair bg-base/85 backdrop-blur"
+      >
+        <div class="mx-auto flex max-w-7xl items-center gap-4 px-5 py-3">
+          <div
+            class="grid h-9 w-9 place-items-center rounded-lg border border-hair bg-panel text-steel"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" />
+              <path d="M9.5 12l1.8 1.8L15 10" />
+            </svg>
+          </div>
+          <div class="mr-auto">
+            <h1 class="font-display text-lg font-semibold leading-none">
+              VillageShield <span class="text-mut">SOC</span>
+            </h1>
+            <p class="mt-0.5 text-[11px] text-mut">
+              Smart-Village IoT · Local AI Risk Engine (Ollama)
+            </p>
+          </div>
+
+          <!-- NEW: AI engine status indicator -->
+          <!-- This badge shows whether events are being scored by the live local
+             AI model or by the static fallback ACM rules. It reads from the
+             most recently received event's `scoringSource` field. -->
+          <div
+            id="ai-status-pill"
+            class="hidden items-center gap-1.5 rounded-full border border-hair bg-panel px-3 py-1.5"
+          >
+            <span
+              id="ai-status-dot"
+              class="lamp inline-block h-2 w-2 rounded-full"
+              style="background-color: #8a97a8; color: #8a97a8"
+            ></span>
+            <span id="ai-status-text" class="font-mono text-[11px] text-mut"
+              >AI: waiting</span
+            >
+          </div>
+
+          <!-- Live socket connection indicator -->
+          <div
+            class="flex items-center gap-2 rounded-full border border-hair bg-panel px-3 py-1.5"
+          >
+            <span
+              id="conn-dot"
+              class="lamp inline-block h-2.5 w-2.5 rounded-full text-mut"
+              style="background-color: #8a97a8"
+            ></span>
+            <span id="conn-text" class="text-xs text-mut">connecting…</span>
+          </div>
+
+          <button
+            id="lock-btn"
+            class="focusable rounded-lg border border-hair bg-panel px-3 py-1.5 text-xs text-mut transition hover:text-ink hover:border-mut"
+          >
+            Lock
+          </button>
+        </div>
+      </header>
+
+      <main class="mx-auto max-w-7xl px-5 py-6">
+        <!-- Global counters -->
+        <section
+          aria-label="Global counters"
+          class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
+        >
+          <div id="stat-total" class="stat-tile"></div>
+          <div id="stat-allowed" class="stat-tile"></div>
+          <div id="stat-blocked" class="stat-tile"></div>
+          <div id="stat-isolated" class="stat-tile"></div>
+          <div id="stat-incidents" class="stat-tile"></div>
+        </section>
+
+        <div class="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">
+          <!-- Device grid -->
+          <section class="xl:col-span-2" aria-label="Monitored devices">
+            <div class="mb-3 flex items-center justify-between">
+              <h2
+                class="font-display text-sm font-semibold uppercase tracking-wider text-mut"
+              >
+                Monitored Assets
+              </h2>
+              <span class="text-xs text-mut"
+                >Click any asset to inspect its traffic + AI analysis</span
+              >
+            </div>
+            <div id="cards" class="grid grid-cols-1 gap-3 sm:grid-cols-2"></div>
+          </section>
+
+          <!-- Live event feed -->
+          <section aria-label="Live event feed" class="xl:col-span-1">
+            <div class="mb-3 flex items-center justify-between">
+              <h2
+                class="font-display text-sm font-semibold uppercase tracking-wider text-mut"
+              >
+                Live Event Feed
+              </h2>
+              <span class="text-xs text-mut"
+                ><span id="feed-count">0</span> events</span
+              >
+            </div>
+            <div
+              id="feed"
+              class="vs-scroll h-[28rem] overflow-y-auto rounded-2xl border border-hair bg-panel p-2 font-mono text-xs xl:h-[34rem]"
+            >
+              <p class="p-3 text-mut">
+                Waiting for traffic… run the mock device script to begin.
+              </p>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- DEVICE DETAIL MODAL                                                    -->
+    <!-- ===================================================================== -->
+    <!--
+    WHAT'S NEW IN THIS MODAL:
+    A full-width "AI Risk Analysis" panel sits between the modal header and the
+    transaction tables. It shows:
+      1. The live AI insight sentence — the local model's human-readable reasoning
+      2. The AI's per-packet risk score with its own colour-coded gauge
+      3. A "AI LIVE" or "STATIC" badge so judges can see which system scored it
+      4. The model name ("llama3.2:1b") so judges know it's running locally
+    This is the primary evidence that the local open-source AI is working.
+  -->
+    <div
+      id="modal"
+      class="fixed inset-0 z-40 hidden items-center justify-center px-3 py-6"
+    >
+      <div
+        id="modal-backdrop"
+        class="absolute inset-0 bg-base/80 backdrop-blur-sm"
+      ></div>
+
+      <div
+        class="relative flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-hair bg-panel shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+      >
+        <!-- Modal header: device identity + ACM-based cumulative risk -->
+        <div
+          class="flex items-center gap-4 border-b border-hair bg-panel2 px-5 py-4"
+        >
+          <div
+            id="modal-icon"
+            class="grid h-11 w-11 place-items-center rounded-xl border border-hair bg-panel text-2xl"
+          >
+            ·
+          </div>
+          <div class="mr-auto min-w-0">
+            <h3
+              id="modal-title"
+              class="truncate font-display text-lg font-semibold leading-tight"
+            >
+              Device
+            </h3>
+            <p id="modal-sub" class="truncate font-mono text-xs text-mut">
+              device_id
+            </p>
+          </div>
+          <div id="modal-status" class="text-right"></div>
+          <button
+            id="modal-close"
+            class="focusable grid h-9 w-9 place-items-center rounded-lg border border-hair bg-panel text-mut transition hover:text-ink hover:border-mut"
+            aria-label="Close"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+
+        <!-- ================================================================= -->
+        <!-- NEW: AI RISK ANALYSIS PANEL                                        -->
+        <!-- This is the centrepiece of the upgrade. Hackathon judges clicking  -->
+        <!-- any device card will see the local AI's live reasoning here.       -->
+        <!-- ================================================================= -->
+        <div
+          id="ai-panel"
+          class="border-b border-hair bg-panel2/60 px-5 py-4"
+          aria-label="AI Risk Analysis"
+        >
+          <div class="flex flex-wrap items-start gap-4">
+            <!-- LEFT: AI brand + insight text -->
+            <div class="flex min-w-0 flex-1 items-start gap-3">
+              <!-- Brain / AI icon in purple -->
+              <div
+                class="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-ai/30 bg-ai/10 text-ai"
+              >
+                <!-- Simple "circuit brain" SVG icon to represent local AI -->
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.44-3.16Z"
+                  />
+                  <path
+                    d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.44-3.16Z"
+                  />
+                </svg>
+              </div>
+
+              <div class="min-w-0 flex-1">
+                <!-- Label row: title + source badge -->
+                <div class="flex flex-wrap items-center gap-2">
+                  <span
+                    class="font-display text-xs font-semibold uppercase tracking-wider text-ai"
+                  >
+                    Local AI Risk Analysis
+                  </span>
+                  <!-- Scoring source badge: shows judges whether the AI is live -->
+                  <span
+                    id="modal-scoring-badge"
+                    class="rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
+                  >
+                    <!-- Populated by JS -->
+                  </span>
+                  <!-- Model name label -->
+                  <span
+                    class="rounded border border-hair px-1.5 py-0.5 font-mono text-[10px] text-mut"
+                  >
+                    ollama / llama3.2:1b
+                  </span>
+                </div>
+
+                <!-- THE INSIGHT TEXT — the primary output of the local AI model.
+                   This is what the model's one-sentence reasoning looks like.
+                   It updates live as new packets arrive while the modal is open.
+                   Using textContent (not innerHTML) for XSS safety. -->
+                <p
+                  id="modal-ai-insight"
+                  class="mt-1.5 rounded-lg border border-ai/20 bg-ai/5 px-3 py-2 font-body text-sm leading-relaxed text-ink"
+                >
+                  Awaiting AI analysis…
+                </p>
+              </div>
+            </div>
+
+            <!-- RIGHT: AI risk score gauge -->
+            <!-- A separate gauge just for the AI's dynamic score, visually distinct
+               from the cumulative ACM score shown in the modal header. -->
+            <div class="flex shrink-0 flex-col items-center gap-1">
+              <div id="modal-ai-gauge">
+                <!-- Populated by JS with an SVG gauge -->
+              </div>
+              <div class="text-center">
+                <div
+                  class="font-mono text-[10px] font-semibold uppercase tracking-wider text-ai"
+                >
+                  AI Score
+                </div>
+                <div class="font-mono text-[10px] text-mut">dynamic</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- How to read this panel — context for judges -->
+          <p class="mt-3 text-[10px] leading-relaxed text-mut">
+            <strong class="text-mut/80">How this works:</strong>
+            Each IoT packet is sent to a
+            <strong class="text-ink">llama3.2:1b</strong> model running locally
+            inside a Docker container via
+            <strong class="text-ink">Ollama</strong> — no internet, no API key,
+            no cloud dependency. The model acts as an automated SOC analyst,
+            reading the device type, action, payload, and ACM rule verdict, then
+            returning a risk score and this plain-English explanation. If the
+            model is loading, the system falls back to static ACM rules
+            automatically.
+          </p>
+        </div>
+        <!-- ================================================================= -->
+        <!-- END: AI RISK ANALYSIS PANEL                                        -->
+        <!-- ================================================================= -->
+
+        <!-- Two scrolling transaction tables -->
+        <div
+          class="grid min-h-0 flex-1 grid-cols-1 gap-px bg-hair md:grid-cols-2"
+        >
+          <!-- OUTBOUND: what the device attempted -->
+          <div class="flex min-h-0 flex-col bg-panel">
+            <div
+              class="flex items-center gap-2 border-b border-hair px-4 py-2.5"
+            >
+              <span
+                class="inline-block h-2 w-2 rounded-full"
+                style="background-color: #e07b39"
+              ></span>
+              <h4 class="font-display text-sm font-semibold">
+                Outbound · Device Attempted
+              </h4>
+              <span id="out-count" class="ml-auto font-mono text-xs text-mut"
+                >0</span
+              >
+            </div>
+            <div class="vs-scroll min-h-0 flex-1 overflow-y-auto">
+              <table class="w-full border-collapse text-left text-xs">
+                <thead class="sticky top-0 bg-panel2 text-mut">
+                  <tr>
+                    <th class="px-3 py-2 font-medium">Time</th>
+                    <th class="px-3 py-2 font-medium">Action</th>
+                    <th class="px-3 py-2 font-medium">Verdict</th>
+                    <!-- NEW column: AI score per transaction -->
+                    <th
+                      class="px-3 py-2 text-right font-medium"
+                      style="color: #8b6fd4"
+                    >
+                      AI
+                    </th>
+                    <th class="px-3 py-2 text-right font-medium">ACM</th>
+                  </tr>
+                </thead>
+                <tbody id="out-body" class="font-mono"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- INBOUND: what Core Utilities actually received -->
+          <div class="flex min-h-0 flex-col bg-panel">
+            <div
+              class="flex items-center gap-2 border-b border-hair px-4 py-2.5"
+            >
+              <span
+                class="inline-block h-2 w-2 rounded-full"
+                style="background-color: #4fb0c6"
+              ></span>
+              <h4 class="font-display text-sm font-semibold">
+                Inbound · Core Received
+              </h4>
+              <span id="in-count" class="ml-auto font-mono text-xs text-mut"
+                >0</span
+              >
+            </div>
+            <div class="vs-scroll min-h-0 flex-1 overflow-y-auto">
+              <table class="w-full border-collapse text-left text-xs">
+                <thead class="sticky top-0 bg-panel2 text-mut">
+                  <tr>
+                    <th class="px-3 py-2 font-medium">Time</th>
+                    <th class="px-3 py-2 font-medium">Action</th>
+                    <th class="px-3 py-2 font-medium">Status</th>
+                    <!-- NEW column: AI score per transaction -->
+                    <th
+                      class="px-3 py-2 text-right font-medium"
+                      style="color: #8b6fd4"
+                    >
+                      AI
+                    </th>
+                    <th class="px-3 py-2 text-right font-medium">ACM</th>
+                  </tr>
+                </thead>
+                <tbody id="in-body" class="font-mono"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="border-t border-hair bg-panel2 px-5 py-2.5 text-[11px] text-mut"
+        >
+          <strong class="text-mut/80">Inbound</strong> = commands that passed
+          every check and reached Core Utilities. &nbsp;
+          <strong class="text-mut/80">Outbound</strong> = everything the device
+          attempted, including blocked and isolated traffic. &nbsp;
+          <strong class="text-ai/80">AI column</strong> = Ollama's per-packet
+          dynamic score (distinct from the cumulative risk score). &nbsp;
+          <strong class="text-ink/60">▶ Click any row</strong> to inspect its
+          raw headers and payload.
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- APPLICATION LOGIC                                                      -->
+    <!-- ===================================================================== -->
+    <script>
+      "use strict";
+
+      // -------------------------------------------------------------------- //
+      // Security: HTML escaping for all untrusted data                        //
+      // -------------------------------------------------------------------- //
+      // CRITICAL: every value here originates from device traffic an attacker
+      // controls (payloads, actions, AI-generated insight text). A monitoring
+      // tool must NEVER let that data inject HTML into the operator's browser.
+      // Everything untrusted is escaped before touching the DOM.
+      //
+      // AI insight text deserves special attention: it is generated by an AI
+      // model that read the attacker's payload. A prompt-injection attack could
+      // try to make the AI output "<script>alert(1)<\/script>". Because we use
+      // escapeHtml() on ALL AI text before inserting it into the DOM, and because
+      // we use textContent (not innerHTML) for the main insight element, this
+      // attack surface is fully neutralised.
+      function escapeHtml(value) {
+        return String(value == null ? "" : value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function fmtTime(iso) {
+        if (!iso) return "—";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return "—";
+        return (
+          d.toLocaleTimeString([], { hour12: false }) +
+          "." +
+          String(d.getMilliseconds()).padStart(3, "0")
+        );
+      }
+
+      // Map a status string to its palette colour.
+      const STATUS_COLOR = {
+        NOMINAL: "#6FB07F",
+        ELEVATED: "#E2B53C",
+        SUSPICIOUS: "#E07B39",
+        CRITICAL: "#E0483D",
+        ISOLATED: "#E0483D",
+      };
+      function statusColor(status) {
+        return STATUS_COLOR[status] || "#8A97A8";
+      }
+
+      // Colour a verdict word (ALLOWED / BLOCKED / ISOLATED / DELIVERED).
+      function decisionColor(decision) {
+        if (decision === "ALLOWED" || decision === "DELIVERED")
+          return "#6FB07F";
+        if (decision === "ISOLATED") return "#E0483D";
+        return "#E07B39";
+      }
+
+      // Build an SVG circular risk gauge (0–100) coloured by status.
+      function gaugeSvg(risk, status, size = 64, fontSize = 16) {
+        const r = size / 2 - 6;
+        const c = 2 * Math.PI * r;
+        const pct = Math.max(0, Math.min(100, Number(risk) || 0)) / 100;
+        const offset = c * (1 - pct);
+        const col = statusColor(status);
+        const half = size / 2;
+        return `
+        <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" class="shrink-0" aria-hidden="true">
+          <circle cx="${half}" cy="${half}" r="${r}" fill="none" stroke="#2A323D" stroke-width="6"></circle>
+          <circle cx="${half}" cy="${half}" r="${r}" fill="none" stroke="${col}" stroke-width="6"
+                  stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}"
+                  stroke-dashoffset="${offset.toFixed(2)}"
+                  transform="rotate(-90 ${half} ${half})"></circle>
+          <text x="${half}" y="${half + 1}" text-anchor="middle" dominant-baseline="middle"
+                font-family="'IBM Plex Mono', monospace" font-size="${fontSize}" font-weight="600"
+                fill="#E6EAF0">${Math.round(Number(risk) || 0)}</text>
+        </svg>`;
+      }
+
+      // NEW: Build an AI-coloured gauge (purple) for the AI risk score.
+      // Distinct from the green/amber/red ACM gauge so judges can tell them apart.
+      function aiGaugeSvg(aiRiskScore) {
+        const size = 56;
+        const r = size / 2 - 6;
+        const c = 2 * Math.PI * r;
+        const score = Math.max(0, Math.min(100, Number(aiRiskScore) || 0));
+        const offset = c * (1 - score / 100);
+        const half = size / 2;
+        // Colour the AI gauge by the AI's own score (not the ACM status).
+        let col = "#6FB07F"; // green for 0-30
+        if (score > 60)
+          col = "#E0483D"; // red for 61-100
+        else if (score > 30) col = "#E2B53C"; // amber for 31-60
+        return `
+        <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+          <circle cx="${half}" cy="${half}" r="${r}" fill="none" stroke="#2A323D" stroke-width="5"></circle>
+          <circle cx="${half}" cy="${half}" r="${r}" fill="none" stroke="${col}" stroke-width="5"
+                  stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}"
+                  stroke-dashoffset="${offset.toFixed(2)}"
+                  transform="rotate(-90 ${half} ${half})"></circle>
+          <text x="${half}" y="${half + 1}" text-anchor="middle" dominant-baseline="middle"
+                font-family="'IBM Plex Mono', monospace" font-size="13" font-weight="600"
+                fill="#E6EAF0">${Math.round(score)}</text>
+        </svg>`;
+      }
+
+      // NEW: Build the "AI LIVE" or "STATIC" badge HTML for the scoring source.
+      function scoringBadgeHtml(source) {
+        if (source === "ollama_ai") {
+          // Solid purple pill: AI is live and responding.
+          return `<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold"
+                      style="background:rgba(139,111,212,0.2);color:#8B6FD4;border:1px solid rgba(139,111,212,0.4);">
+                  <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#8B6FD4;"></span>
+                  AI LIVE
+                </span>`;
+        }
+        if (source === "static_acm") {
+          // Amber pill: AI is offline, using static rules.
+          return `<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold"
+                      style="background:rgba(226,181,60,0.15);color:#E2B53C;border:1px solid rgba(226,181,60,0.3);">
+                  STATIC
+                </span>`;
+        }
+        // "none" or unknown — AI hasn't been queried yet.
+        return `<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold"
+                    style="background:rgba(138,151,168,0.1);color:#8A97A8;border:1px solid rgba(138,151,168,0.2);">
+                WAITING
+              </span>`;
+      }
+
+      // -------------------------------------------------------------------- //
+      // State                                                                //
+      // -------------------------------------------------------------------- //
+      let state = {
+        devices: [],
+        globals: { totalEvents: 0, allowed: 0, blocked: 0, isolated: 0 },
+      };
+      let feedItems = [];
+      let openDeviceId = null;
+      let socket = null;
+      let authed = false;
+
+      // -------------------------------------------------------------------- //
+      // Global AI status tracking (for the header badge)                     //
+      // -------------------------------------------------------------------- //
+      // We track the most recently seen scoring_source across ALL events so the
+      // header badge reflects the current AI engine health.
+      let lastScoringSource = "none";
+
+      function updateAiStatusPill(source) {
+        lastScoringSource = source;
+        const pill = document.getElementById("ai-status-pill");
+        const dot = document.getElementById("ai-status-dot");
+        const txt = document.getElementById("ai-status-text");
+        pill.classList.remove("hidden");
+        pill.classList.add("flex");
+        if (source === "ollama_ai") {
+          dot.style.backgroundColor = "#8B6FD4";
+          dot.style.color = "#8B6FD4";
+          txt.textContent = "AI: live";
+          txt.style.color = "#8B6FD4";
+        } else {
+          dot.style.backgroundColor = "#E2B53C";
+          dot.style.color = "#E2B53C";
+          txt.textContent = "AI: static fallback";
+          txt.style.color = "#E2B53C";
+        }
+      }
+
+      // -------------------------------------------------------------------- //
+      // Rendering                                                            //
+      // -------------------------------------------------------------------- //
+      function statTile(label, value, color) {
+        return `
+        <div class="rounded-2xl border border-hair bg-panel px-4 py-3">
+          <div class="font-mono text-3xl font-semibold leading-none" style="color:${color}">${value}</div>
+          <div class="mt-1.5 text-[11px] uppercase tracking-wider text-mut">${label}</div>
+        </div>`;
+      }
+
+      function renderGlobals() {
+        const g = state.globals || {};
+        const incidents = (state.devices || []).filter(
+          (d) => d.status && d.status !== "NOMINAL",
+        ).length;
+        document.getElementById("stat-total").innerHTML = statTile(
+          "Total Events",
+          g.totalEvents || 0,
+          "#E6EAF0",
+        );
+        document.getElementById("stat-allowed").innerHTML = statTile(
+          "Allowed",
+          g.allowed || 0,
+          "#6FB07F",
+        );
+        document.getElementById("stat-blocked").innerHTML = statTile(
+          "Blocked",
+          g.blocked || 0,
+          "#E07B39",
+        );
+        document.getElementById("stat-isolated").innerHTML = statTile(
+          "Isolated",
+          g.isolated || 0,
+          "#E0483D",
+        );
+        document.getElementById("stat-incidents").innerHTML = statTile(
+          "Active Incidents",
+          incidents,
+          incidents ? "#E0483D" : "#6FB07F",
+        );
+      }
+
+      function deviceCard(d) {
+        const col = statusColor(d.status);
+        const isolated = d.status === "ISOLATED";
+        const ring = isolated
+          ? "isolated-pulse border-critical/60"
+          : "border-hair hover:border-mut";
+
+        // NEW: AI insight preview on the card.
+        // We show a truncated version of the latest AI insight below the
+        // device's traffic counters. This lets operators see the AI's reasoning
+        // directly on the grid without opening the modal.
+        const hasAi = d.aiInsight && d.scoringSource !== "none";
+        const aiPreview = hasAi
+          ? `<div class="mt-2 flex items-start gap-1.5 rounded-lg border border-ai/20 bg-ai/5 px-2.5 py-1.5">
+             <svg class="mt-0.5 shrink-0" width="10" height="10" viewBox="0 0 24 24" fill="none"
+                  stroke="#8B6FD4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+               <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.44-3.16Z"/>
+               <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.44-3.16Z"/>
+             </svg>
+             <span class="truncate text-[10px] leading-tight text-ai/90"
+                   title="${escapeHtml(d.aiInsight)}">${escapeHtml(d.aiInsight)}</span>
+           </div>`
+          : "";
+
+        return `
+        <button data-device="${escapeHtml(d.id)}"
+          class="focusable group block w-full rounded-2xl border ${ring} bg-panel p-4 text-left transition hover:bg-panel2">
+          <div class="flex items-start gap-4">
+            ${gaugeSvg(d.risk, d.status)}
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-lg leading-none">${escapeHtml(d.icon || "·")}</span>
+                <span class="truncate font-display text-sm font-semibold">${escapeHtml(d.label || d.id)}</span>
+              </div>
+              <div class="mt-0.5 truncate font-mono text-[11px] text-mut">${escapeHtml(d.id)}</div>
+              <div class="mt-0.5 text-[11px] text-mut">${escapeHtml(d.zone || "")}</div>
+
+              <div class="mt-2 flex items-center gap-2">
+                <span class="lamp inline-block h-2.5 w-2.5 rounded-full"
+                      style="background-color:${col};color:${col};"></span>
+                <span class="text-xs font-semibold" style="color:${col}">${escapeHtml(d.status || "NOMINAL")}</span>
+                <!-- AI score badge on card (small) -->
+                ${
+                  d.aiRiskScore != null
+                    ? `<span class="ml-auto font-mono text-[10px]" style="color:#8B6FD4">AI:${d.aiRiskScore}</span>`
+                    : ""
+                }
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-3 grid grid-cols-3 gap-2 border-t border-hair pt-3 text-center">
+            <div>
+              <div class="font-mono text-sm text-steel">${d.inboundCount || 0}</div>
+              <div class="text-[10px] uppercase tracking-wide text-mut">Inbound</div>
+            </div>
+            <div>
+              <div class="font-mono text-sm text-ink">${d.outboundCount || 0}</div>
+              <div class="text-[10px] uppercase tracking-wide text-mut">Outbound</div>
+            </div>
+            <div>
+              <div class="font-mono text-sm text-suspicious">${d.blockedCount || 0}</div>
+              <div class="text-[10px] uppercase tracking-wide text-mut">Blocked</div>
+            </div>
+          </div>
+
+          ${aiPreview}
+
+          <div class="mt-2 text-[10px] text-mut">last seen ${d.lastSeen ? escapeHtml(fmtTime(d.lastSeen)) : "—"}</div>
+        </button>`;
+      }
+
+      function renderCards() {
+        const wrap = document.getElementById("cards");
+        const devices = state.devices || [];
+        wrap.innerHTML = devices.map(deviceCard).join("");
+        wrap.querySelectorAll("[data-device]").forEach((btn) => {
+          btn.addEventListener("click", () =>
+            openModal(btn.getAttribute("data-device")),
+          );
+        });
+      }
+
+      function feedRow(item) {
+        const col = decisionColor(item.decision);
+        const dirLabel = item.direction === "inbound" ? "IN " : "OUT";
+        const dirCol = item.direction === "inbound" ? "#4FB0C6" : "#8A97A8";
+        const anomalies =
+          item.anomalies && item.anomalies.length
+            ? ` · ${escapeHtml(item.anomalies.join(","))}`
+            : "";
+        // NEW: Show AI score inline in the live feed for quick scanning.
+        const aiLabel =
+          item.aiRiskScore != null
+            ? `<span style="color:#8B6FD4;margin-left:4px;">ai:${item.aiRiskScore}</span>`
+            : "";
+        return `
+        <div class="feed-row flex items-start gap-2 border-b border-hair/60 px-2 py-1.5">
+          <span class="shrink-0 text-mut">${escapeHtml(fmtTime(item.ts))}</span>
+          <span class="shrink-0 font-semibold" style="color:${dirCol}">${dirLabel}</span>
+          <span class="min-w-0 flex-1 truncate">
+            <span class="text-ink">${escapeHtml(item.label || item.deviceId)}</span>
+            <span class="text-mut"> · ${escapeHtml(item.action || "")}</span>
+            <span class="text-mut/80">${escapeHtml(item.payload ? " · " + item.payload : "")}</span>
+          </span>
+          <span class="shrink-0 font-semibold" style="color:${col}">${escapeHtml(item.decision || "")}${anomalies}</span>
+          ${aiLabel}
+        </div>`;
+      }
+
+      function renderFeed() {
+        const wrap = document.getElementById("feed");
+        document.getElementById("feed-count").textContent = feedItems.length;
+        if (!feedItems.length) {
+          wrap.innerHTML =
+            '<p class="p-3 text-mut">Waiting for traffic… run the mock device script to begin.</p>';
+          return;
+        }
+        wrap.innerHTML = feedItems.map(feedRow).join("");
+      }
+
+      // ---- Modal ---------------------------------------------------------- //
+
+      // Toggle visibility of a transaction's detail expansion row.
+      function toggleTxDetail(id) {
+        const detail = document.getElementById(id);
+        if (!detail) return;
+        const isHidden = detail.classList.contains("hidden");
+        // Collapse any other open detail rows in the same table body first.
+        const tbody = detail.closest("tbody");
+        if (tbody) {
+          tbody.querySelectorAll(".tx-detail-row").forEach((el) => {
+            if (el.id !== id) el.classList.add("hidden");
+          });
+          tbody.querySelectorAll(".tx-chevron").forEach((el) => {
+            if (el.dataset.detail !== id) el.textContent = "▶";
+          });
+        }
+        detail.classList.toggle("hidden", !isHidden);
+        // Rotate the chevron on the matching main row.
+        const chevron = document.querySelector(
+          `.tx-chevron[data-detail="${id}"]`,
+        );
+        if (chevron) chevron.textContent = isHidden ? "▼" : "▶";
+      }
+
+      // Render one transaction as a clickable main row + a hidden detail expansion row.
+      // `direction` is "inbound" or "outbound"; `idx` is a unique string per row.
+      function txRow(tx, direction, idx) {
+        const col = decisionColor(tx.decision);
+        const blockedTint =
+          tx.decision &&
+          tx.decision !== "ALLOWED" &&
+          tx.decision !== "DELIVERED"
+            ? "bg-critical/10"
+            : "";
+        const reason = tx.reason
+          ? `<span class="text-mut"> · ${escapeHtml(tx.reason)}</span>`
+          : "";
+        const anomalies =
+          tx.anomalies && tx.anomalies.length
+            ? `<div class="text-[10px] text-suspicious mt-0.5">${escapeHtml(tx.anomalies.join(", "))}</div>`
+            : "";
+        const aiScore =
+          tx.aiRiskScore != null
+            ? `<span title="${escapeHtml(tx.aiInsight || "")}"
+               style="color:#8B6FD4;cursor:help;">${tx.aiRiskScore}</span>`
+            : `<span class="text-mut">—</span>`;
+
+        const detailId = `tx-detail-${idx}`;
+
+        // Direction badge for the detail pane.
+        const dirColor = direction === "inbound" ? "#4FB0C6" : "#E07B39";
+        const dirLabel = direction === "inbound" ? "INBOUND" : "OUTBOUND";
+
+        // Format headers as escaped key: value lines.
+        const hdrs =
+          tx.headers && typeof tx.headers === "object" ? tx.headers : {};
+        const hdrLines = Object.entries(hdrs)
+          .map(([k, v]) => `${escapeHtml(k)}: ${escapeHtml(String(v))}`)
+          .join("\n");
+
+        const mainRow = `
+        <tr class="border-b border-hair/50 ${blockedTint} cursor-pointer hover:bg-panel2/60 select-none"
+            onclick="toggleTxDetail('${detailId}')">
+          <td class="whitespace-nowrap px-3 py-2 text-mut">
+            <span class="tx-chevron mr-1 text-mut/50" data-detail="${detailId}">▶</span>${escapeHtml(fmtTime(tx.ts))}
+          </td>
+          <td class="px-3 py-2 text-ink">
+            ${escapeHtml(tx.action || "")}
+            ${anomalies}
+          </td>
+          <td class="px-3 py-2">
+            <span class="font-semibold" style="color:${col}">${escapeHtml(tx.decision || "")}</span>
+            ${reason}
+          </td>
+          <td class="px-3 py-2 text-right font-mono">${aiScore}</td>
+          <td class="px-3 py-2 text-right text-ink font-mono">${tx.risk != null ? escapeHtml(String(tx.risk)) : "—"}</td>
+        </tr>`;
+
+        const detailRow = `
+        <tr id="${detailId}" class="tx-detail-row hidden border-b border-hair">
+          <td colspan="5" class="px-0 py-0">
+            <div class="bg-base/70 px-4 py-3 text-[11px]">
+              <!-- Direction + source -->
+              <div class="mb-3 flex items-center gap-2">
+                <span class="rounded px-2 py-0.5 font-mono font-bold"
+                      style="background:${dirColor}22;color:${dirColor};border:1px solid ${dirColor}44;">${dirLabel}</span>
+                <span class="font-mono text-mut">from ${escapeHtml(tx.sourceIp || "unknown")}</span>
+              </div>
+              <!-- Headers -->
+              <div class="mb-3">
+                <div class="mb-1 font-display text-[10px] font-semibold uppercase tracking-wider text-mut">Request Headers</div>
+                <pre class="vs-scroll overflow-x-auto whitespace-pre rounded border border-hair bg-panel px-3 py-2 font-mono leading-relaxed text-ink">${hdrLines || "(none)"}</pre>
+              </div>
+              <!-- Body / payload -->
+              <div>
+                <div class="mb-1 font-display text-[10px] font-semibold uppercase tracking-wider text-mut">Body / Payload</div>
+                <pre class="vs-scroll overflow-x-auto whitespace-pre-wrap rounded border border-hair bg-panel px-3 py-2 font-mono leading-relaxed text-ink">${escapeHtml(tx.payload || "(empty)")}</pre>
+              </div>
+            </div>
+          </td>
+        </tr>`;
+
+        return mainRow + detailRow;
+      }
+
+      function renderModal() {
+        if (!openDeviceId) return;
+        const d = (state.devices || []).find((x) => x.id === openDeviceId);
+        if (!d) return;
+
+        document.getElementById("modal-icon").textContent = d.icon || "·";
+        document.getElementById("modal-title").textContent = d.label || d.id;
+        document.getElementById("modal-sub").textContent =
+          d.id + (d.zone ? "  ·  " + d.zone : "");
+
+        const col = statusColor(d.status);
+        document.getElementById("modal-status").innerHTML =
+          `<div class="text-xs text-mut">ACM risk <span class="font-mono text-ink">${Math.round(d.risk || 0)}</span></div>
+         <div class="text-sm font-semibold" style="color:${col}">${escapeHtml(d.status || "NOMINAL")}</div>`;
+
+        // ---- Populate the AI panel ---------------------------------------- //
+        // This is the key section for the hackathon demo. We set the insight text
+        // using textContent (NOT innerHTML) so an attacker cannot inject HTML through
+        // the AI's generated text. XSS-safe even if the model outputs <script> tags.
+        const insightEl = document.getElementById("modal-ai-insight");
+        const newInsight = d.aiInsight || "Awaiting AI analysis…";
+        if (insightEl.textContent !== newInsight) {
+          insightEl.textContent = newInsight;
+          // Trigger the flash animation to draw the judge's eye when AI updates.
+          insightEl.classList.remove("ai-flash");
+          // Force reflow so removing and re-adding the class triggers the animation.
+          void insightEl.offsetWidth;
+          insightEl.classList.add("ai-flash");
+        }
+
+        // AI score gauge (purple, distinct from the ACM gauge)
+        const aiGaugeEl = document.getElementById("modal-ai-gauge");
+        if (d.aiRiskScore != null) {
+          aiGaugeEl.innerHTML = aiGaugeSvg(d.aiRiskScore);
+        } else {
+          aiGaugeEl.innerHTML = aiGaugeSvg(0);
+        }
+
+        // Scoring source badge
+        document.getElementById("modal-scoring-badge").innerHTML =
+          scoringBadgeHtml(d.scoringSource || "none");
+        // ---- End AI panel ------------------------------------------------- //
+
+        const outBody = document.getElementById("out-body");
+        const inBody = document.getElementById("in-body");
+
+        // Newest-first for readability.
+        const outbound = (d.outbound || []).slice().reverse();
+        const inbound = (d.inbound || []).slice().reverse();
+
+        document.getElementById("out-count").textContent = d.outboundCount || 0;
+        document.getElementById("in-count").textContent = d.inboundCount || 0;
+
+        outBody.innerHTML = outbound.length
+          ? outbound
+              .map((tx, i) => txRow(tx, "outbound", `out-${openDeviceId}-${i}`))
+              .join("")
+          : `<tr><td colspan="5" class="px-3 py-6 text-center text-mut">No outbound attempts yet.</td></tr>`;
+
+        inBody.innerHTML = inbound.length
+          ? inbound
+              .map((tx, i) => txRow(tx, "inbound", `in-${openDeviceId}-${i}`))
+              .join("")
+          : `<tr><td colspan="5" class="px-3 py-6 text-center text-mut">Nothing reached Core Utilities yet.</td></tr>`;
+      }
+
+      function openModal(id) {
+        openDeviceId = id;
+        const modal = document.getElementById("modal");
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+        renderModal();
+      }
+
+      function closeModal() {
+        openDeviceId = null;
+        const modal = document.getElementById("modal");
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+      }
+
+      // -------------------------------------------------------------------- //
+      // Socket wiring                                                        //
+      // -------------------------------------------------------------------- //
+      function setConn(connected) {
+        const dot = document.getElementById("conn-dot");
+        const txt = document.getElementById("conn-text");
+        if (connected) {
+          dot.style.backgroundColor = "#6FB07F";
+          dot.style.color = "#6FB07F";
+          txt.textContent = "live";
+          txt.classList.remove("text-mut");
+          txt.classList.add("text-sage");
+        } else {
+          dot.style.backgroundColor = "#E0483D";
+          dot.style.color = "#E0483D";
+          txt.textContent = "disconnected";
+          txt.classList.remove("text-sage");
+          txt.classList.add("text-mut");
+        }
+      }
+
+      function connectSocket() {
+        if (socket) return;
+        socket = io({ transports: ["websocket", "polling"] });
+
+        socket.on("connect", () => setConn(true));
+        socket.on("disconnect", () => setConn(false));
+
+        // Full state snapshot (sent on connect and after every mutation).
+        socket.on("state", (snap) => {
+          if (!snap) return;
+          state = snap;
+          renderGlobals();
+          renderCards();
+          renderModal(); // keep an open modal live as new traffic arrives
+
+          // NEW: Update the header AI status pill from any device's latest source.
+          // We take the most recent source from all devices (first non-"none" found).
+          const anyAiDevice = (snap.devices || []).find(
+            (d) => d.scoringSource && d.scoringSource !== "none",
+          );
+          if (anyAiDevice) updateAiStatusPill(anyAiDevice.scoringSource);
+        });
+
+        // Initial feed dump on connect.
+        socket.on("feed", (items) => {
+          feedItems = Array.isArray(items) ? items : [];
+          renderFeed();
+        });
+
+        // A single new event (newest first), pushed in real time.
+        socket.on("event", (item) => {
+          if (!item) return;
+          feedItems.unshift(item);
+          if (feedItems.length > 200) feedItems.pop();
+          renderFeed();
+          // Update header AI pill from live event stream.
+          if (item.scoringSource && item.scoringSource !== "none") {
+            updateAiStatusPill(item.scoringSource);
+          }
+        });
+      }
+
+      // -------------------------------------------------------------------- //
+      // Authentication (PIN gate). No localStorage: a refresh re-prompts.    //
+      // -------------------------------------------------------------------- //
+      const ADMIN_PIN = "1234";
+
+      function attemptLogin() {
+        const input = document.getElementById("pin");
+        const err = document.getElementById("pin-error");
+        // .trim() handles browser autofill/autocomplete that appends spaces or
+        // newlines, which would otherwise make the exact === comparison fail even
+        // when the user typed the right digits.
+        if (input.value.trim() === ADMIN_PIN) {
+          authed = true;
+          document.getElementById("login").classList.add("hidden");
+          document.getElementById("app").classList.remove("hidden");
+          renderGlobals();
+          renderCards();
+          renderFeed();
+          // Socket init is isolated in try/catch so a missing socket.io script
+          // (e.g. slow first boot) never prevents the overlay from dismissing.
+          try {
+            connectSocket();
+          } catch (e) {
+            console.error("[login] socket init failed:", e);
+          }
+        } else {
+          err.classList.remove("hidden");
+          input.value = "";
+          input.focus();
+        }
+      }
+
+      function lock() {
+        authed = false;
+        closeModal();
+        if (socket) {
+          socket.disconnect();
+          socket = null;
+        }
+        document.getElementById("app").classList.add("hidden");
+        const login = document.getElementById("login");
+        login.classList.remove("hidden");
+        document.getElementById("pin-error").classList.add("hidden");
+        const input = document.getElementById("pin");
+        input.value = "";
+        input.focus();
+      }
+
+      // -------------------------------------------------------------------- //
+      // Event listeners                                                      //
+      // -------------------------------------------------------------------- //
+      document
+        .getElementById("login-btn")
+        .addEventListener("click", attemptLogin);
+      document.getElementById("pin").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") attemptLogin();
+      });
+      document.getElementById("lock-btn").addEventListener("click", lock);
+
+      document
+        .getElementById("modal-close")
+        .addEventListener("click", closeModal);
+      document
+        .getElementById("modal-backdrop")
+        .addEventListener("click", closeModal);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && openDeviceId) closeModal();
+      });
+
+      window.addEventListener("load", () =>
+        document.getElementById("pin").focus(),
+      );
+    </script>
+  </body>
+</html>
