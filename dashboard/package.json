@@ -1,0 +1,15 @@
+{
+  "name": "villageshield-dashboard",
+  "version": "1.0.0",
+  "description": "VillageShield SIEM event engine + real-time security operations dashboard",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "cors": "^2.8.5"
+  }
+}
