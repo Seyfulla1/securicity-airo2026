@@ -273,20 +273,27 @@ def query_ollama_for_risk(
         "Your ONLY job: analyze one IoT packet and return a JSON risk score.\n\n"
         "STRICT OUTPUT FORMAT — no other text, no markdown, no fences:\n"
         '{"risk_score": <INTEGER 0-100>, "ai_insight": "<ONE sentence, max 15 words>"}\n\n'
-        "MANDATORY SCORING RULES — follow these exactly:\n"
-        "  Rule 1: ACM Decision = ALLOWED, no anomalies, normal payload  →  score 0-15\n"
-        "  Rule 2: ACM Decision = ALLOWED, payload contains suspicious words "
-        "(override, bypass, disable, tamper, unauthorized, admin, remote)  →  score 20-45\n"
-        "  Rule 3: ACM Decision = BLOCKED, reason = ACM_VIOLATION (forbidden action)  →  score 45-65\n"
-        "           If Device Threat Level is ELEVATED or HIGH-RISK, add 10-20 to that score.\n"
-        "  Rule 4: ACM Decision = BLOCKED, reason = PAYLOAD_ANOMALY (injection/overflow)  →  score 80-100\n"
-        "  Rule 5: ACM Decision = ISOLATED (device already quarantined)  →  score 90-100\n\n"
-        "EXAMPLE RESPONSES (one per rule):\n"
-        '{"risk_score": 3,  "ai_insight": "Normal pump telemetry within expected parameters."}\n'
-        '{"risk_score": 32, "ai_insight": "Permitted action but payload mentions safety override."}\n'
-        '{"risk_score": 52, "ai_insight": "Device_shutdown not in pump allow-list, first violation."}\n'
-        '{"risk_score": 68, "ai_insight": "Repeated forbidden actions from already suspicious device."}\n'
-        '{"risk_score": 91, "ai_insight": "Overflow injection detected in sensor payload."}'
+        "MANDATORY SCORING RULES:\n"
+        "  Rule 1: ACM Decision = ALLOWED, no anomalies  →  score 0-15\n"
+        "  Rule 2: ACM Decision = ALLOWED, payload has suspicious words "
+        "(override, bypass, disable, tamper, unauthorized)  →  score 20-45\n"
+        "  Rule 3: ACM Decision = BLOCKED, reason = ACM_VIOLATION  →  score 45-65\n"
+        "           Add 10-20 if Device Threat Level is ELEVATED or HIGH-RISK.\n"
+        "  Rule 4: ACM Decision = BLOCKED, reason = PAYLOAD_ANOMALY  →  score 80-100\n"
+        "  Rule 5: ACM Decision = ISOLATED  →  score 90-100\n\n"
+        "CRITICAL RULES FOR ai_insight:\n"
+        "  • You MUST use the exact 'Action Attempted' value from the input in your sentence.\n"
+        "  • You MUST reflect the device's current Threat Level (CLEAN / ELEVATED / HIGH-RISK / CRITICAL).\n"
+        "  • NEVER reuse the same sentence for different events — each insight must describe THIS packet.\n"
+        "  • Write in plain English. Name the specific action and why it is suspicious or safe.\n\n"
+        "INSIGHT PATTERNS — fill in the bracketed values from the input, do not copy literally:\n"
+        "  Rule 1: \"[device_label] [action] is routine; no anomalies detected.\"\n"
+        "  Rule 2: \"[action] permitted but payload contains suspicious keyword [word].\"\n"
+        "  Rule 3 (CLEAN):     \"[action] not in [device_label] allow-list; first policy violation.\"\n"
+        "  Rule 3 (ELEVATED):  \"[action] blocked again; [device_label] accumulating violations.\"\n"
+        "  Rule 3 (HIGH-RISK): \"[action] blocked; [device_label] near isolation threshold.\"\n"
+        "  Rule 4: \"Payload anomaly in [action]: [anomaly type] detected, device blacklisted.\"\n"
+        "  Rule 5: \"[device_label] quarantined; [action] refused by isolation policy.\""
     )
 
     # ------------------------------------------------------------------ #
@@ -324,8 +331,8 @@ def query_ollama_for_risk(
         f"Source IP Address: {source_ip}\n"
         f"ACM Rule Decision: {acm_decision} (reason: {acm_reason})\n"
         f"Payload Anomalies Detected: {anomaly_str}\n\n"
-        "Apply the mandatory scoring rules from your instructions. "
-        "Respond with ONLY the JSON object. No other text."
+        f"Your ai_insight MUST mention the action '{action}' and the threat level '{threat_level.split(' ')[0]}'. "
+        "Apply the scoring rules and respond with ONLY the JSON object. No other text."
     )
 
     try:
@@ -349,8 +356,8 @@ def query_ollama_for_risk(
                 # Keep the model context small: we don't need conversation
                 # history, just a fresh analysis for each packet.
                 "options": {
-                    "num_ctx": 768,       # Slightly larger to fit enriched prompt
-                    "temperature": 0.1,   # Low temperature = deterministic, rule-following output
+                    "num_ctx": 1024,      # Larger context to fit enriched prompt + patterns
+                    "temperature": 0.3,   # Enough variation to generate unique per-event insights
                 },
             },
             timeout=OLLAMA_TIMEOUT,
@@ -424,20 +431,46 @@ def query_ollama_for_risk(
         return None
 
 
-def get_static_ai_result(acm_decision: str, acm_reason: str) -> dict:
+def get_static_ai_result(
+    acm_decision: str,
+    acm_reason: str,
+    action: str = "",
+    anomalies: list | None = None,
+) -> dict:
     """
     Fallback when Ollama is unavailable.
 
-    Returns a static risk assessment based purely on the ACM decision.
-    The `scoring_source` field tells the dashboard to show a "STATIC" badge
-    instead of an "AI LIVE" badge, so operators know the AI is offline.
+    Produces event-specific text so each row in the dashboard shows a unique
+    reason even when the AI is offline. The `scoring_source` field tells the
+    dashboard to show a "STATIC" badge so operators know the AI is offline.
     """
-    static_scores = {
-        "ALLOWED":  (0,  "AI offline. Static verdict: action permitted by ACM rules."),
-        "BLOCKED":  (65, "AI offline. Static verdict: action violates ACM policy."),
-        "ISOLATED": (90, "AI offline. Static verdict: device is quarantined."),
-    }
-    score, insight = static_scores.get(acm_decision, (50, f"AI offline. Reason: {acm_reason}."))
+    anomalies = anomalies or []
+    act = action or "unknown action"
+
+    if acm_decision == "ALLOWED":
+        score = 5
+        insight = f"Static rule: '{act}' is permitted by ACM policy. No violations detected."
+    elif acm_decision == "BLOCKED":
+        if acm_reason == "PAYLOAD_ANOMALY":
+            score = 85
+            anom_str = ", ".join(anomalies) if anomalies else "unspecified anomaly"
+            insight = f"Static rule: malicious payload detected in '{act}' ({anom_str}). Device isolated."
+        elif acm_reason == "ACM_VIOLATION":
+            score = 65
+            insight = f"Static rule: '{act}' is not in this device's allow-list. ACM policy violation."
+        elif acm_reason == "UNKNOWN_DEVICE":
+            score = 90
+            insight = f"Static rule: unregistered device blocked attempting '{act}'."
+        else:
+            score = 65
+            insight = f"Static rule: '{act}' blocked — {acm_reason}."
+    elif acm_decision == "ISOLATED":
+        score = 90
+        insight = f"Static rule: device is quarantined; '{act}' denied by isolation policy."
+    else:
+        score = 50
+        insight = f"Static rule: '{act}' — {acm_reason}."
+
     return {
         "ai_risk_score": score,
         "ai_insight": insight,
@@ -617,7 +650,7 @@ def handle_command():
         current_risk=risk_now,
     )
     if ai_result is None:
-        ai_result = get_static_ai_result(decision, reason)
+        ai_result = get_static_ai_result(decision, reason, action=action, anomalies=anomalies)
 
     # Unpack the AI result into named variables for clarity.
     ai_risk_score   = ai_result["ai_risk_score"]
