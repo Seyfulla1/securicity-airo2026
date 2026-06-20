@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VillageShield - Graduated Attack Demo
+SecuriVillage - Graduated Attack Demo
 ======================================
 
 Runs a realistic multi-device attack escalation against the security router
@@ -226,7 +226,7 @@ def phase5_isolation_proof():
 
 def main():
     print(f"""
-{BOLD}VillageShield — Graduated Attack Demo{RESET}
+{BOLD}SecuriVillage — Graduated Attack Demo{RESET}
 {DIM}Target: {PROXY_URL}{RESET}
 
 {BOLD}AI scoring formula:{RESET}

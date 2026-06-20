@@ -1,5 +1,5 @@
 /*
- * VillageShield - SIEM Event Engine + Real-Time Dashboard Server
+ * SecuriVillage - SIEM Event Engine + Real-Time Dashboard Server
  * ==============================================================
  *
  * This Node.js service plays two roles:
@@ -253,5 +253,5 @@ io.on("connection", (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[BOOT] VillageShield SIEM dashboard on http://0.0.0.0:${PORT}`);
+  console.log(`[BOOT] SecuriVillage SIEM dashboard on http://0.0.0.0:${PORT}`);
 });

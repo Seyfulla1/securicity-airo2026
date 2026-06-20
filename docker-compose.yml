@@ -1,5 +1,5 @@
 # ===========================================================================
-# VillageShield - container orchestration
+# SecuriVillage - container orchestration
 # ===========================================================================
 # Modern Docker Compose no longer needs a top-level `version:` key, so we omit
 # it. `name:` sets the project name (used as a prefix for the network/volumes).
@@ -29,7 +29,7 @@
 #                any packet arrives.
 #   core      -> starts alongside dashboard; no AI dependency.
 # ===========================================================================
-name: villageshield
+name: securivillage
 
 # ===========================================================================
 # VOLUMES
@@ -40,7 +40,7 @@ name: villageshield
 # The first `docker compose up` downloads the model once. Every subsequent
 # startup skips the download and loads from disk in ~5 seconds.
 #
-# To wipe the model cache (e.g., to switch models): `docker volume rm villageshield_ollama_models`
+# To wipe the model cache (e.g., to switch models): `docker volume rm securivillage_ollama_models`
 volumes:
   ollama_models:
 
@@ -51,7 +51,7 @@ services:
   # -------------------------------------------------------------------------
   dashboard:
     build: ./dashboard
-    container_name: vs_dashboard
+    container_name: sv_dashboard
     environment:
       - PORT=3000
     networks:
@@ -89,7 +89,7 @@ services:
   # -------------------------------------------------------------------------
   ollama:
     image: ollama/ollama:latest
-    container_name: vs_ollama
+    container_name: sv_ollama
     networks:
       village_net:
         ipv4_address: 172.28.0.40
@@ -132,7 +132,7 @@ services:
   # -------------------------------------------------------------------------
   router:
     build: ./router
-    container_name: vs_router
+    container_name: sv_router
     environment:
       - LISTEN_PORT=5000
       - DASHBOARD_WEBHOOK=http://172.28.0.10:3000/api/ingest
@@ -172,7 +172,7 @@ services:
   # -------------------------------------------------------------------------
   core:
     build: ./core
-    container_name: vs_core
+    container_name: sv_core
     environment:
       - CORE_PORT=6000
     networks:

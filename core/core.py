@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VillageShield - Core Utilities (the protected backend)
+SecuriVillage - Core Utilities (the protected backend)
 ======================================================
 
 This represents the REAL control plane of the village: the service that actually
@@ -30,7 +30,7 @@ LAST_COMMAND = {}
 
 @app.get("/health")
 def health():
-    return jsonify({"service": "villageshield-core", "status": "up"}), 200
+    return jsonify({"service": "securivillage-core", "status": "up"}), 200
 
 
 @app.post("/command")
@@ -50,5 +50,5 @@ def command():
 
 
 if __name__ == "__main__":
-    print(f"[BOOT] VillageShield core listening on :{CORE_PORT}", flush=True)
+    print(f"[BOOT] SecuriVillage core listening on :{CORE_PORT}", flush=True)
     app.run(host="0.0.0.0", port=CORE_PORT, threaded=True)

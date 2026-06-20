@@ -95,7 +95,7 @@ docker compose up --build
 Leave this terminal open. You will see log lines from all four services. Wait until you see:
 
 ```
-vs_router  | [BOOT] VillageShield router listening on :5000
+sv_router  | [BOOT] SecuriVillage router listening on :5000
 ```
 
 That means the model is loaded and the router is ready.
@@ -142,7 +142,7 @@ Edit `docker-compose.yml` — change both `OLLAMA_MODEL` lines — then wipe the
 
 ```bash
 docker compose down
-docker volume rm securivillage_ollama_models   # or villageshield_ollama_models
+docker volume rm securivillage_ollama_models   # or securivillage_ollama_models
 docker compose up --build
 ```
 

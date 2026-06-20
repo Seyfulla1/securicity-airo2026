@@ -1,5 +1,5 @@
 # ===========================================================================
-# VillageShield Router - Python Dependencies
+# SecuriVillage Router - Python Dependencies
 # ===========================================================================
 # These are the ONLY external packages the router needs. Python's standard
 # library handles everything else (threading, re, json, os, datetime).

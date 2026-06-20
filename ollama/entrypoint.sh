@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# VillageShield - Ollama AI Container Startup Script
+# SecuriVillage - Ollama AI Container Startup Script
 # =============================================================================
 # PURPOSE: This script solves the "chicken-and-egg" problem of starting Ollama.
 #
@@ -21,7 +21,7 @@ set -e  # Exit immediately if any command fails (safety net)
 MODEL="${OLLAMA_MODEL:-llama3.2:1b}"
 
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║       VillageShield Local AI Engine Startup          ║"
+echo "║       SecuriVillage Local AI Engine Startup          ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 echo "[OLLAMA] Step 1/3: Starting Ollama server process in background..."
@@ -81,7 +81,7 @@ echo "[OLLAMA] On subsequent runs, the model is cached in the Docker volume (ins
 
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║  ✓ VillageShield AI Engine FULLY OPERATIONAL!       ║"
+echo "║  ✓ SecuriVillage AI Engine FULLY OPERATIONAL!       ║"
 echo "║  Model: ${MODEL}"
 echo "║  Endpoint: http://ollama:11434 (internal network)    ║"
 echo "╚══════════════════════════════════════════════════════╝"

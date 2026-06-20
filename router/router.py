@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VillageShield - Security Router / Policy Enforcement Point (PEP)
+SecuriVillage - Security Router / Policy Enforcement Point (PEP)
 ================================================================
 
 This Flask service is the ONLY door that smart-village IoT devices are allowed
@@ -541,7 +541,7 @@ app = Flask(__name__)
 
 @app.get("/health")
 def health():
-    return jsonify({"service": "villageshield-router", "status": "up"}), 200
+    return jsonify({"service": "securivillage-router", "status": "up"}), 200
 
 
 @app.get("/status")
@@ -730,7 +730,7 @@ def handle_command():
 
 
 if __name__ == "__main__":
-    print(f"[BOOT] VillageShield router listening on :{LISTEN_PORT}", flush=True)
+    print(f"[BOOT] SecuriVillage router listening on :{LISTEN_PORT}", flush=True)
     print(f"[BOOT] SIEM webhook  -> {DASHBOARD_WEBHOOK}", flush=True)
     print(f"[BOOT] Core backend  -> {CORE_BACKEND}", flush=True)
     print(f"[BOOT] Ollama AI     -> {OLLAMA_URL} (model: {OLLAMA_MODEL}, timeout: {OLLAMA_TIMEOUT}s)", flush=True)

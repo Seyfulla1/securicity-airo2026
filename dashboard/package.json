@@ -1,7 +1,7 @@
 {
-  "name": "villageshield-dashboard",
+  "name": "securivillage-dashboard",
   "version": "1.0.0",
-  "description": "VillageShield SIEM event engine + real-time security operations dashboard",
+  "description": "SecuriVillage SIEM event engine + real-time security operations dashboard",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
