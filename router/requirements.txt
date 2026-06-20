@@ -1,0 +1,21 @@
+# ===========================================================================
+# VillageShield Router - Python Dependencies
+# ===========================================================================
+# These are the ONLY external packages the router needs. Python's standard
+# library handles everything else (threading, re, json, os, datetime).
+#
+# Pin exact versions (==) in production so a `pip install` six months from
+# now gets IDENTICAL bytecode to what you tested. Floating versions (~=, >=)
+# can silently introduce breaking changes from upstream maintainers.
+# ===========================================================================
+
+# Flask: The micro web framework that powers our HTTP endpoint (/command, /health).
+# "Micro" means minimal core, no built-in ORM or auth — exactly what we need for
+# a focused security proxy that doesn't want hidden complexity.
+flask==3.0.3
+
+# Requests: The standard Python HTTP client library. Used for TWO purposes:
+#   1. Querying the local Ollama AI engine at http://172.28.0.40:11434/api/chat
+#   2. POSTing enriched security events to the dashboard webhook at /api/ingest
+# Requests handles connection pooling, timeouts, retries, and JSON encoding.
+requests==2.32.3
